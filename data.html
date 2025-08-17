@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Absensi & Slip Gaji</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; padding:20px; }
+  h1,h2 { text-align:center; }
+  table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+  th, td { border: 1px solid #ccc; padding: 5px; text-align: center; }
+  th { background: #0b5cff; color: white; }
+  .tanggal-merah { background-color: #fdd; }   /* Minggu & Libur Nasional */
+  .tanggal-sabtu { background-color: #ffd; }  /* Sabtu */
+  .sticky-col { position: sticky; left: 0; background: #fff; z-index: 2; }
+  .sticky-head { position: sticky; top: 0; z-index: 3; }
+  .slip { page-break-after: always; }
+</style>
+</head>
+<body>
+
+<h1>ABSENSI PROJECT KT&G PASURUAN</h1>
+
+<div>
+  Periode:
+  <input type="date" id="startDate"> s/d
+  <input type="date" id="endDate">
+  <button onclick="generateTable()">Buat Tabel Absensi</button>
+</div>
+
+<div id="tableContainer"></div>
+
+<div style="margin-top:20px;">
+  <button onclick="generateSlips()">Generate Slip Gaji</button>
+  <button onclick="exportExcel()">Export Excel</button>
+  <button onclick="exportPDF()">Export PDF</button>
+  <button onclick="saveData()">Save Data</button>
+  <input type="file" id="fileInput" onchange="loadData(event)">
+</div>
+
+<div id="slipContainer"></div>
+<div id="rekapContainer"></div>
+
+<script>
+const { jsPDF } = window.jspdf;
+
+// Daftar pekerja
+let pekerja = [
+  { nama:"Haryono", jabatan:"Skill 2", salary:150000, kasbon:0 },
+  { nama:"Lestari", jabatan:"Skill 2", salary:150000, kasbon:0 },
+  { nama:"Munir", jabatan:"Skill 1", salary:170000, kasbon:0 },
+  { nama:"Agung", jabatan:"Helper", salary:120000, kasbon:0 },
+  { nama:"Alex", jabatan:"Helper", salary:120000, kasbon:0 },
+  { nama:"Suryadi", jabatan:"Helper", salary:120000, kasbon:0 },
+  { nama:"Sugig", jabatan:"Helper", salary:120000, kasbon:0 },
+  { nama:"Fatoni", jabatan:"Helper", salary:120000, kasbon:0 },
+  { nama:"Wakidi", jabatan:"Helper", salary:120000, kasbon:0 },
+  { nama:"Febri", jabatan:"Helper", salary:120000, kasbon:0 }
+];
+
+// Libur nasional hardcode
+let liburNasional = ["2025-08-17","2025-12-25"];
+
+// Generate tabel absensi
+function generateTable(){
+  const start = new Date(document.getElementById("startDate").value);
+  const end = new Date(document.getElementById("endDate").value);
+  if(isNaN(start) || isNaN(end)) return alert("Pilih periode dulu!");
+
+  let table = "<table><thead><tr><th class='sticky-col sticky-head'>Nama</th><th class='sticky-head'>Jabatan</th><th class='sticky-head'>Salary</th><th class='sticky-head'>Kasbon</th>";
+
+  // Header tanggal
+  for(let t=start.getTime(); t<=end.getTime(); t+=86400000){
+    let d = new Date(t);
+    let iso = d.toISOString().split("T")[0];
+    let hari = d.toLocaleDateString("id-ID",{weekday:"short"});
+    let tgl = d.toLocaleDateString("id-ID",{day:"2-digit",month:"short"});
+    
+    let kelas = "";
+    if(d.getDay()==0 || liburNasional.includes(iso)) kelas = "tanggal-merah";
+    else if(d.getDay()==6) kelas = "tanggal-sabtu";
+
+    table += `<th colspan="2" class='${kelas}'>${hari}<br>${tgl}</th>`;
+  }
+  table += "</tr><tr><th class='sticky-col'></th><th></th><th></th><th></th>";
+
+  for(let t=start.getTime(); t<=end.getTime(); t+=86400000){
+    table += "<th>Hadir</th><th>OT</th>";
+  }
+  table += "</tr></thead><tbody>";
+
+  // Data pekerja
+  pekerja.forEach((p,i)=>{
+    table += `<tr>
+      <td class='sticky-col'>${p.nama}</td>
+      <td>${p.jabatan}</td>
+      <td>${p.salary}</td>
+      <td><input type='number' id='kasbon-${i}' value='${p.kasbon}'></td>`;
+    
+    for(let t=start.getTime(); t<=end.getTime(); t+=86400000){
+      let d = new Date(t);
+      let iso = d.toISOString().split("T")[0];
+      table += `<td>
+        <select id='hadir-${i}-${iso}'>
+          <option value="0">0</option>
+          <option value="0.5">0.5</option>
+          <option value="1">1</option>
+        </select>
+      </td>
+      <td>
+        <select id='ot-${i}-${iso}'>
+          <option value="0">0</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+        </select>
+      </td>`;
+    }
+    table += "</tr>";
+  });
+
+  table += "</tbody></table>";
+  document.getElementById("tableContainer").innerHTML = table;
+}
+
+// Generate slip gaji
+function generateSlips(){
+  const start = new Date(document.getElementById("startDate").value);
+  const end = new Date(document.getElementById("endDate").value);
+  if(isNaN(start) || isNaN(end)) return alert("Pilih periode dulu!");
+
+  let container = "";
+  let rekapRows = "";
+  let totalAll = 0;
+
+  pekerja.forEach((p,i)=>{
+    let total = 0;
+    let dailyRows = "";
+    for(let t=start.getTime(); t<=end.getTime(); t+=86400000){
+      let d = new Date(t);
+      let iso = d.toISOString().split("T")[0];
+      let hari = d.toLocaleDateString("id-ID",{weekday:"long"});
+      let tgl = d.toLocaleDateString("id-ID",{day:"2-digit",month:"long",year:"numeric"});
+
+      let hadir = parseFloat(document.getElementById(`hadir-${i}-${iso}`).value);
+      let ot = parseInt(document.getElementById(`ot-${i}-${iso}`).value);
+
+      let gajiHarian = p.salary * hadir;
+      let gajiOT = (p.salary/8) * ot;
+      if(ot>=3) gajiOT += 15000;
+
+      let subtotal = gajiHarian + gajiOT;
+      let isMinggu = d.getDay()==0;
+      let isSabtu = d.getDay()==6;
+      let isLibur = liburNasional.includes(iso);
+
+      if(isMinggu || isLibur) subtotal *= 1.5;
+
+      total += subtotal;
+
+      let rowClass = isMinggu || isLibur ? "tanggal-merah" : (isSabtu ? "tanggal-sabtu" : "");
+      dailyRows += `<tr class="${rowClass}">
+        <td>${hari}</td>
+        <td>${tgl}</td>
+        <td>${gajiHarian.toLocaleString()}</td>
+        <td>${gajiOT.toLocaleString()}</td>
+        <td>${subtotal.toLocaleString()}</td>
+      </tr>`;
+    }
+
+    let kasbon = parseFloat(document.getElementById(`kasbon-${i}`).value||0);
+    let terima = total - kasbon;
+    totalAll += terima;
+
+    // Slip individu
+    container += `<div class="slip">
+      <h2>Slip Gaji</h2>
+      <p>Nama: <b>${p.nama}</b> | Jabatan: <b>${p.jabatan}</b> | Salary: <b>${p.salary.toLocaleString()}</b></p>
+      <p>Periode: ${start.toLocaleDateString("id-ID")} - ${end.toLocaleDateString("id-ID")}</p>
+      <table>
+        <tr><th>Hari</th><th>Tanggal</th><th>Gaji Harian</th><th>OT</th><th>Total</th></tr>
+        ${dailyRows}
+      </table>
+      <p><b>Total Gaji:</b> ${total.toLocaleString()}<br>
+      <b>Kasbon:</b> ${kasbon.toLocaleString()}<br>
+      <b>Diterima:</b> ${terima.toLocaleString()}</p>
+    </div>`;
+
+    // Rekap baris
+    rekapRows += `<tr><td>${i+1}</td><td>${p.nama}</td><td>${terima.toLocaleString()}</td></tr>`;
+  });
+
+  document.getElementById("slipContainer").innerHTML = container;
+
+  // Rekap tabel
+  let rekapTable = `
+    <h2 style="text-align:center;">REKAPITULASI GAJI PERIODE ${start.toLocaleDateString("id-ID")} s/d ${end.toLocaleDateString("id-ID")}</h2>
+    <table>
+      <tr><th>No</th><th>Nama</th><th>Diterima</th></tr>
+      ${rekapRows}
+      <tr><td colspan="2"><b>TOTAL</b></td><td><b>${totalAll.toLocaleString()}</b></td></tr>
+    </table>
+  `;
+  document.getElementById("rekapContainer").innerHTML = rekapTable;
+}
+
+// Export Excel
+function exportExcel(){
+  let wb = XLSX.utils.book_new();
+  let ws = XLSX.utils.table_to_sheet(document.querySelector("table"));
+  XLSX.utils.book_append_sheet(wb, ws, "Absensi");
+  XLSX.writeFile(wb, "absensi.xlsx");
+}
+
+// Export PDF
+function exportPDF(){
+  const doc = new jsPDF();
+  doc.html(document.body, {
+    callback: function (doc) { doc.save("laporan.pdf"); },
+    x: 10, y: 10
+  });
+}
+
+// Save data JSON
+function saveData(){
+  const start = document.getElementById("startDate").value;
+  const end = document.getElementById("endDate").value;
+  let absensi = [];
+  pekerja.forEach((p,i)=>{
+    let dataPekerja = { ...p, absensi:{} };
+    for(let t=new Date(start).getTime(); t<=new Date(end).getTime(); t+=86400000){
+      let d = new Date(t);
+      let iso = d.toISOString().split("T")[0];
+      let hadir = document.getElementById(`hadir-${i}-${iso}`).value;
+      let ot = document.getElementById(`ot-${i}-${iso}`).value;
+      dataPekerja.absensi[iso] = { hadir, ot };
+    }
+    dataPekerja.kasbon = document.getElementById(`kasbon-${i}`).value;
+    absensi.push(dataPekerja);
+  });
+  let saveObj = { start, end, absensi };
+  let blob = new Blob([JSON.stringify(saveObj)], {type: "application/json"});
+  let a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "absensi.json";
+  a.click();
+}
+
+// Load data JSON
+function loadData(event){
+  const file = event.target.files[0];
+  if(!file) return;
+  let reader = new FileReader();
+  reader.onload = function(e){
+    let data = JSON.parse(e.target.result);
+    document.getElementById("startDate").value = data.start;
+    document.getElementById("endDate").value = data.end;
+    generateTable();
+    pekerja.forEach((p,i)=>{
+      for(let iso in data.absensi[i].absensi){
+        document.getElementById(`hadir-${i}-${iso}`).value = data.absensi[i].absensi[iso].hadir;
+        document.getElementById(`ot-${i}-${iso}`).value = data.absensi[i].absensi[iso].ot;
+      }
+      document.getElementById(`kasbon-${i}`).value = data.absensi[i].kasbon ?? 0;
+    });
+  };
+  reader.readAsText(file);
+}
+</script>
+
+</body>
+</html>
